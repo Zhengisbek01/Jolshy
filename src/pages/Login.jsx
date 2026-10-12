@@ -1,0 +1,153 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { useStore } from '../store.jsx';
+import { ROLES } from '../data/constants.js';
+import { Btn, Field, Note } from '../ui.jsx';
+import { hashPass, DEMO_PASSWORD, LOCK_AFTER, LOCK_MS, passwordProblem } from '../lib/auth.js';
+
+export default function Login() {
+  const { state, reset } = useStore();
+  return (
+    <div className="login">
+      <div className="login-hero">
+        <div className="brand"><div className="brand-mark"><Gauge /></div><div><b>Jolshy</b><small>ТОО «JASA Ltd» · G-TON</small></div></div>
+        <div>
+          <h1>Jolshy</h1>
+          <p>Мониторинг дорог: ИИ-детекция ям, разметки и знаков с камер транспорта, приложение инспектора с GPS, контроль подрядчиков и автоматические заявки в 109.</p>
+        </div>
+        <p className="small">Тестовая версия на демо-данных: {state.nets.oblast.roads.length} областных дорог, 1 588 км, {state.nets.city.roads.length} улиц областного центра, {state.defects.length} дефектов за 60 дней. Действия сохраняются в этом браузере.</p>
+      </div>
+      <div className="login-main">
+        <div><h2 style={{ fontSize: '1.4rem' }}>Вход в Jolshy</h2></div>
+        <StaffLogin />
+        <div className="btns"><Btn kind="ghost" small onClick={() => { if (window.confirm('Сбросить все изменения демо-данных?')) reset(); }}>Сбросить демо-данные</Btn></div>
+      </div>
+    </div>
+  );
+}
+
+function StaffLogin() {
+  const { state, login, sysAct } = useStore();
+  const [lg, setLg] = useState('');
+  const [pw, setPw] = useState('');
+  const [show, setShow] = useState(false);
+  const [err, setErr] = useState('');
+  const [twofa, setTwofa] = useState(null);
+  const [code, setCode] = useState('');
+  const [, tick] = useState(0);
+  useEffect(() => { const t = setInterval(() => tick((x) => x + 1), 1000); return () => clearInterval(t); }, []);
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (!lg.trim() || !pw) { setErr('Введите логин и пароль.'); return; }
+    const u = state.users.find((x) => x.login.toLowerCase() === lg.trim().toLowerCase());
+    if (u && u.lockedUntil > Date.now()) { setErr(`Слишком много неудачных попыток. Вход откроется через ${Math.ceil((u.lockedUntil - Date.now()) / 1000)} с.`); return; }
+    if (!u || u.passHash !== hashPass(u.login, pw)) {
+      if (u) {
+        const failed = (u.failed || 0) + 1;
+        const lock = failed >= LOCK_AFTER;
+        sysAct({ name: u.login, role: 'system' }, lock ? 'Вход заблокирован' : 'Неудачный вход', u.name, lock ? `${LOCK_AFTER} неверных паролей подряд, блокировка на 1 минуту` : `Неверный пароль, попытка ${failed}`, (d) => {
+          const x = d.users.find((y) => y.id === u.id); x.failed = lock ? 0 : failed; if (lock) x.lockedUntil = Date.now() + LOCK_MS;
+        });
+        setErr(lock ? 'Слишком много неудачных попыток. Вход заблокирован на 1 минуту.' : `Неверный логин или пароль. Осталось попыток: ${LOCK_AFTER - failed}.`);
+      } else setErr('Неверный логин или пароль.');
+      return;
+    }
+    if (!u.active) { setErr('Учётная запись заблокирована. Обратитесь к администратору платформы.'); return; }
+    if (u.twoFactor) {
+      const c = String(Math.floor(100000 + Math.random() * 900000));
+      setTwofa({ u, c, tries: 0 }); setCode(''); setErr('');
+      return;
+    }
+    finish(u);
+  };
+  const finish = (u) => {
+    sysAct({ name: u.name, id: u.id, role: u.role }, 'Вход в систему', 'Логин организации', u.twoFactor ? 'С подтверждением кодом' : '', (d) => { const x = d.users.find((y) => y.id === u.id); x.failed = 0; x.lockedUntil = 0; x.lastLogin = new Date().toISOString(); });
+    login({ kind: 'staff', userId: u.id });
+  };
+  const verify = (e) => {
+    e.preventDefault();
+    if (code.trim() === twofa.c) { finish(twofa.u); return; }
+    const tries = twofa.tries + 1;
+    if (tries >= 3) { setTwofa(null); setPw(''); setErr('Код введён неверно 3 раза. Войдите заново.'); return; }
+    setTwofa({ ...twofa, tries }); setErr(`Неверный код. Осталось попыток: ${3 - tries}.`);
+  };
+
+  if (twofa) {
+    return (
+      <form className="card form" onSubmit={verify} style={{ maxWidth: 440 }}>
+        <h3>Подтверждение входа</h3>
+        <p className="small" style={{ margin: 0 }}>Для роли «{ROLES[twofa.u.role].name}» нужен второй фактор. Код отправлен по SMS.</p>
+        <div className="egov" style={{ borderStyle: 'dashed' }}><div className="egov-body"><span className="small muted">SMS · тестовый режим</span><span>Jolshy: код входа <b className="mono">{twofa.c}</b>. Никому не сообщайте.</span></div></div>
+        <Field label="Код из SMS" error={err}><input inputMode="numeric" autoFocus maxLength={6} value={code} onChange={(e) => { setCode(e.target.value.replace(/\D/g, '')); setErr(''); }} /></Field>
+        <div className="btns"><Btn kind="pri" type="submit">Подтвердить</Btn><Btn kind="ghost" onClick={() => { setTwofa(null); setErr(''); }}>Отмена</Btn></div>
+      </form>
+    );
+  }
+  return (
+    <div className="form">
+      <form className="card form" onSubmit={submit} style={{ maxWidth: 440 }}>
+        <Field label="Логин"><input autoComplete="username" value={lg} onChange={(e) => { setLg(e.target.value); setErr(''); }} placeholder="operator1" /></Field>
+        <Field label="Пароль" error={err}>
+          <div className="btns" style={{ flexWrap: 'nowrap' }}>
+            <input type={show ? 'text' : 'password'} autoComplete="current-password" value={pw} onChange={(e) => { setPw(e.target.value); setErr(''); }} />
+            <Btn kind="ghost" small onClick={() => setShow(!show)} aria-label={show ? 'Скрыть пароль' : 'Показать пароль'}>{show ? 'Скрыть' : 'Показать'}</Btn>
+          </div>
+        </Field>
+        <div className="btns"><Btn kind="pri" type="submit">Войти</Btn></div>
+        <span className="small muted">Забыли пароль? Новый временный пароль выдаёт администратор платформы.</span>
+      </form>
+      <div className="card" style={{ maxWidth: 640, borderColor: 'var(--amber)' }}>
+        <div className="card-h"><h3>Пилотные учётные записи</h3><span className="card-aside">нажмите, чтобы подставить</span></div>
+        <p className="small" style={{ margin: '0 0 12px' }}>Пароль для всех: <b className="mono" style={{ fontSize: '1rem', background: 'var(--warn-soft)', padding: '2px 8px', borderRadius: 6 }}>{DEMO_PASSWORD}</b></p>
+        <div className="role-grid">
+          {state.users.filter((u) => u.active).map((u) => (
+            <button key={u.id} type="button" className="role-btn" onClick={() => { setLg(u.login); setPw(DEMO_PASSWORD); setErr(''); }}>
+              <b className="mono">{u.login}</b><span>{ROLES[u.role].name} · {u.name}</span>
+            </button>
+          ))}
+        </div>
+        <p className="small muted" style={{ margin: '12px 0 0' }}>У администратора после пароля нужен код из SMS: в тестовом режиме он показан на экране. Для показа удобно начать с dispatcher1, inspector1 и upravlenie.</p>
+      </div>
+    </div>
+  );
+}
+
+export function ChangePassword({ forced, onDone }) {
+  const { user, act, toast, logout } = useStore();
+  const [cur, setCur] = useState('');
+  const [p1, setP1] = useState('');
+  const [p2, setP2] = useState('');
+  const [err, setErr] = useState('');
+  const save = (e) => {
+    e.preventDefault();
+    if (hashPass(user.login, cur) !== user.passHash) { setErr(forced ? 'Неверный временный пароль.' : 'Текущий пароль указан неверно.'); return; }
+    const pr = passwordProblem(p1); if (pr) { setErr(`Новый пароль: ${pr}`); return; }
+    if (p1 === cur) { setErr('Новый пароль должен отличаться от текущего.'); return; }
+    if (p1 !== p2) { setErr('Пароли не совпадают.'); return; }
+    act('Смена пароля', user.name, forced ? 'После выдачи временного пароля' : 'По инициативе пользователя', (d) => { const x = d.users.find((y) => y.id === user.id); x.passHash = hashPass(x.login, p1); x.mustChange = false; x.passChangedAt = new Date().toISOString(); });
+    toast('Пароль изменён'); onDone && onDone();
+  };
+  const form = (
+    <form className="form" onSubmit={save}>
+      <Field label={forced ? 'Временный пароль' : 'Текущий пароль'}><input type="password" autoComplete="current-password" value={cur} onChange={(e) => { setCur(e.target.value); setErr(''); }} /></Field>
+      <Field label="Новый пароль" hint="Не короче 8 символов, буквы и цифры"><input type="password" autoComplete="new-password" value={p1} onChange={(e) => { setP1(e.target.value); setErr(''); }} /></Field>
+      <Field label="Повторите новый пароль" error={err}><input type="password" autoComplete="new-password" value={p2} onChange={(e) => { setP2(e.target.value); setErr(''); }} /></Field>
+      <div className="btns"><Btn kind="pri" type="submit">Сохранить пароль</Btn>{forced && <Btn kind="ghost" onClick={() => logout()}>Выйти</Btn>}</div>
+    </form>
+  );
+  if (!forced) return form;
+  return (
+    <div className="login" style={{ gridTemplateColumns: 'minmax(0,1fr)' }}>
+      <div className="login-main" style={{ margin: '0 auto', maxWidth: 480 }}>
+        <div className="brand"><div className="brand-mark"><Gauge /></div><div><b>Jolshy</b></div></div>
+        <h2 style={{ fontSize: '1.3rem' }}>Смените временный пароль</h2>
+        <p className="small muted" style={{ margin: 0 }}>{user.name}, администратор выдал вам временный пароль. Задайте постоянный, чтобы продолжить.</p>
+        <div className="card">{form}</div>
+      </div>
+    </div>
+  );
+}
+
+export const Gauge = () => (
+  <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.5" fill="none" stroke="#0F2A2E" strokeWidth="2" /><path d="M10 10 L14.5 6" stroke="#0F2A2E" strokeWidth="2" strokeLinecap="round" /><circle cx="10" cy="10" r="1.8" fill="#0F2A2E" /></svg>
+);
